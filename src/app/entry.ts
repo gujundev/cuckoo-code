@@ -186,7 +186,7 @@ function createWindow(profile: any) {
   // 平台未选择时：整个侧边栏隐藏 + 地址栏也隐藏（AI 页面从顶部铺满）
   (mainWindow as any).__ckSidebarWidth = providerChosen ? SIDEBAR_COLLAPSED : 0;
   (mainWindow as any).__ckToolbarHeight = providerChosen ? TOOLBAR_HEIGHT : 0;
-  const layoutView = () => {
+  const applyLayout = () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     const sbw = (mainWindow as any).__ckSidebarWidth ?? SIDEBAR_WIDTH;
     const tbh = (mainWindow as any).__ckToolbarHeight ?? TOOLBAR_HEIGHT;
@@ -210,9 +210,27 @@ function createWindow(profile: any) {
       }
     }
   };
+  // Linux（尤其 Wayland/XWayland）下窗口最大化/还原时，resize 事件触发瞬间
+  // getContentSize() 可能仍是旧值，导致 WebContentsView 边界未跟随
+  // （F11 全屏因稳定期更长而正常）。策略：
+  //   1) 立即应用一次（尺寸已就绪时即时生效）
+  //   2) 下一 tick 再应用（覆盖尺寸尚未稳定的情况）
+  //   3) 再延迟 100ms 兜底（Wayland 合成器的 resize 是异步的）
+  // 并挂到更多窗口状态事件上，确保任何尺寸状态变化都会重新布局。
+  let relayoutTimer: any = null;
+  const layoutView = () => {
+    applyLayout();
+    setImmediate(applyLayout);
+    if (relayoutTimer) clearTimeout(relayoutTimer);
+    relayoutTimer = setTimeout(applyLayout, 100);
+  };
   (mainWindow as any).__ckLayout = layoutView;
-  layoutView();
+  applyLayout();
   mainWindow.on('resize', layoutView);
+  mainWindow.on('maximize', layoutView);
+  mainWindow.on('unmaximize', layoutView);
+  mainWindow.on('enter-full-screen', layoutView);
+  mainWindow.on('leave-full-screen', layoutView);
 
   // 加载地址栏壳页面；壳就绪后主动推一次当前 URL 状态（避免与 view 加载竞态）
   mainWindow.loadFile(resolveSrc('ui/shell.html'));
