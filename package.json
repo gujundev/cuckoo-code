@@ -4,6 +4,7 @@
   "description": "DeepSeek 桌面应用——内嵌浏览器，自动识别 AI 回复中的命令和工具调用并执行",
   "type": "module",
   "main": "out/src/app/entry.js",
+  "desktopName": "cuckoo-code.desktop",
   "scripts": {
     "compile": "node scripts/build-hooks.mjs && tsc -p tsconfig.build.json && node scripts/build-tool-api.mjs && node scripts/build-shell.mjs",
     "fetch-runtime": "node scripts/fetch-runtime.mjs",
@@ -25,7 +26,10 @@
     "build:win:local": "npm run compile && electron-builder --win --publish never",
     "build:win:nsis:local": "npm run compile && electron-builder --win --config.win.target=nsis --publish never",
     "build:mac:local": "npm run compile && electron-builder --mac --publish never",
-    "build:mac:dmg:local": "npm run compile && electron-builder --mac --config.mac.target=dmg --publish never"
+    "build:mac:dmg:local": "npm run compile && electron-builder --mac --config.mac.target=dmg --publish never",
+    "build:linux": "npm run compile && electron-builder --linux --publish always",
+    "build:linux:local": "npm run compile && electron-builder --linux --publish never",
+    "sync:build:linux": "bash scripts/sync-and-build-linux.sh"
   },
   "keywords": [
     "deepseek",
@@ -108,6 +112,16 @@
         }
       ],
       "artifactName": "cuckoo-code-mac-v${version}-${arch}.${ext}"
+    },
+    "linux": {
+      "target": [
+        { "target": "AppImage", "arch": ["x64"] }
+      ],
+      "category": "Development",
+      "icon": "build/icons",
+      "executableName": "cuckoo-code",
+      "syncDesktopName": true,
+      "synopsis": "DeepSeek 桌面应用——内嵌浏览器，自动识别 AI 回复中的命令和工具调用并执行"
     },
     "nsis": {
       "oneClick": false,
