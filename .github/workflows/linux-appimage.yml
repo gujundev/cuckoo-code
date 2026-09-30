@@ -41,8 +41,8 @@ jobs:
           git remote add upstream https://github.com/wangyongpeng90/cuckoo-code.git 2>/dev/null || true
           git fetch upstream master
           git checkout master
-          git merge upstream/master --no-edit
-          git push origin master
+          git rebase upstream/master
+          git push origin master --force-with-lease
 
       - name: Rebase feat/linux-packaging onto upstream/master
         id: rebase
