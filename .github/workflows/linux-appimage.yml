@@ -1,0 +1,117 @@
+name: Linux AppImage
+
+# 触发方式：
+#   - push 到 feat/linux-packaging：立即构建
+#   - 打 linux-v* tag：构建并发布 Release
+#   - 定时（UTC 02:00 = 北京 10:00）：同步上游 → rebase → 构建
+#   - 手动触发（Actions 页面）
+on:
+  push:
+    branches:
+      - feat/linux-packaging
+    tags:
+      - 'linux-v*'
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    # 仅定时/手动触发时才同步上游；push/tag 触发时跳过
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      rebased: ${{ steps.rebase.outputs.rebased }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Sync master from upstream
+        run: |
+          git remote add upstream https://github.com/wangyongpeng90/cuckoo-code.git 2>/dev/null || true
+          git fetch upstream master
+          git checkout master
+          git merge upstream/master --no-edit
+          git push origin master
+
+      - name: Rebase feat/linux-packaging onto upstream/master
+        id: rebase
+        run: |
+          git checkout feat/linux-packaging
+          if git rebase upstream/master; then
+            git push origin feat/linux-packaging --force-with-lease
+            echo "rebased=true" >> "$GITHUB_OUTPUT"
+          else
+            git rebase --abort
+            echo "rebased=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::feat/linux-packaging 无法自动 rebase 到 upstream/master（可能有冲突），已跳过本次构建，请手动解决后重试。"
+          fi
+
+  build:
+    needs: [sync]
+    # sync 被跳过（push/tag 触发）→ 直接构建；sync 成功且 rebase 成功 → 构建
+    if: always() && (needs.sync.result == 'skipped' || (needs.sync.result == 'success' && needs.sync.outputs.rebased == 'true'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # tag 触发时用 tag；否则一律构建 feat/linux-packaging
+          ref: ${{ startsWith(github.ref, 'refs/tags/') && github.ref || 'feat/linux-packaging' }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install ImageMagick
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick
+
+      - name: Install dependencies
+        run: npm install
+        env:
+          npm_config_allow_remote: all
+
+      - name: Generate icon set
+        run: |
+          mkdir -p build/icons
+          for size in 16 32 48 64 128 256 512; do
+            magick build/icon.png -background none -resize "${size}x${size}" -depth 8 \
+              -strip -define png:exclude-chunk=time "build/icons/${size}x${size}.png"
+          done
+          ls -l build/icons
+
+      - name: Build AppImage
+        run: npm run build:linux:local
+
+      - name: Verify artifact
+        run: |
+          ls -lh dist/*.AppImage
+          test -s "$(ls dist/*.AppImage | head -1)"
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cuckoo-Code-Linux-AppImage
+          path: dist/*.AppImage
+          retention-days: 30
+
+      - name: Publish Release (tag)
+        if: startsWith(github.ref, 'refs/tags/linux-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.AppImage
+          generate_release_notes: true
