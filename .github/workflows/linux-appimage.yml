@@ -87,9 +87,12 @@ jobs:
 
       - name: Generate icon set
         run: |
+          # Ubuntu 的 imagemagick 是 v6（命令为 convert）；v7 才是 magick。两者都兼容。
+          if command -v magick >/dev/null 2>&1; then IM_CMD=magick; else IM_CMD=convert; fi
+          echo "using: $IM_CMD"
           mkdir -p build/icons
           for size in 16 32 48 64 128 256 512; do
-            magick build/icon.png -background none -resize "${size}x${size}" -depth 8 \
+            "$IM_CMD" build/icon.png -background none -resize "${size}x${size}" -depth 8 \
               -strip -define png:exclude-chunk=time "build/icons/${size}x${size}.png"
           done
           ls -l build/icons
