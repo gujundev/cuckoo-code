@@ -3,8 +3,10 @@ name: Linux AppImage
 # 触发方式：
 #   - push 到 feat/linux-packaging：立即构建
 #   - 打 linux-v* tag：构建并发布 Release
-#   - 定时（UTC 02:00 = 北京 10:00）：同步上游 → rebase → 构建
-#   - 手动触发（Actions 页面）
+#   - 定时（UTC 02:00 = 北京 10:00）/ 手动：CI 内部临时 rebase 到上游最新后构建
+#
+# 设计说明：CI 只构建产物，不向仓库推送（GITHUB_TOKEN 无权修改 .github/workflows/）。
+# 需要把 fork 分支同步到 GitHub 时，用本地的 scripts/sync-and-build-linux.sh（带 PAT）。
 on:
   push:
     branches:
@@ -19,48 +21,7 @@ permissions:
   contents: write
 
 jobs:
-  sync:
-    # 仅定时/手动触发时才同步上游；push/tag 触发时跳过
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    outputs:
-      rebased: ${{ steps.rebase.outputs.rebased }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Configure git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Sync master from upstream
-        run: |
-          git remote add upstream https://github.com/wangyongpeng90/cuckoo-code.git 2>/dev/null || true
-          git fetch upstream master
-          git checkout master
-          git rebase upstream/master
-          git push origin master --force-with-lease
-
-      - name: Rebase feat/linux-packaging onto upstream/master
-        id: rebase
-        run: |
-          git checkout feat/linux-packaging
-          if git rebase upstream/master; then
-            git push origin feat/linux-packaging --force-with-lease
-            echo "rebased=true" >> "$GITHUB_OUTPUT"
-          else
-            git rebase --abort
-            echo "rebased=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::feat/linux-packaging 无法自动 rebase 到 upstream/master（可能有冲突），已跳过本次构建，请手动解决后重试。"
-          fi
-
   build:
-    needs: [sync]
-    # sync 被跳过（push/tag 触发）→ 直接构建；sync 成功且 rebase 成功 → 构建
-    if: always() && (needs.sync.result == 'skipped' || (needs.sync.result == 'success' && needs.sync.outputs.rebased == 'true'))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -68,6 +29,22 @@ jobs:
         with:
           # tag 触发时用 tag；否则一律构建 feat/linux-packaging
           ref: ${{ startsWith(github.ref, 'refs/tags/') && github.ref || 'feat/linux-packaging' }}
+          fetch-depth: 0
+
+      - name: Sync upstream (仅定时/手动；CI 内部 rebase，不推送)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/wangyongpeng90/cuckoo-code.git 2>/dev/null || true
+          git fetch upstream master
+          if git rebase upstream/master; then
+            echo "✅ 已 rebase 到上游最新，构建最新版"
+          else
+            git rebase --abort
+            echo "::warning::rebase 到上游最新有冲突，改用当前分支状态构建"
+          fi
+          echo "本次构建提交: $(git rev-parse --short HEAD) $(git log -1 --format=%s)"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
