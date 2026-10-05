@@ -10,11 +10,12 @@
 ## 目录
 
 - [产物在哪](#产物在哪)
-- [三种触发方式](#三种触发方式)
+- [四种触发方式](#四种触发方式)
 - [发新版本](#发新版本)
 - [本地开发与同步](#本地开发与同步)
 - [冲突处理](#冲突处理)
 - [已知限制](#已知限制)
+- [什么是 PAT？以及为什么需要它](#什么是-pat以及为什么需要它)
 - [相关文件](#相关文件)
 
 ---
@@ -45,7 +46,7 @@ chmod +x Cuckoo-Code-*.AppImage
 
 ---
 
-## 三种触发方式
+## 四种触发方式
 
 workflow 文件：`.github/workflows/linux-appimage.yml`
 
@@ -53,8 +54,17 @@ workflow 文件：`.github/workflows/linux-appimage.yml`
 |------|------|------|
 | **推送分支** | push 到 `feat/linux-packaging` | 直接构建，产物上传为 Artifact |
 | **打 tag** | 推送 `linux-v*` 格式的 tag | 构建 + **自动创建 GitHub Release** 并附上 AppImage |
-| **定时** | 每天 UTC 02:00（北京 10:00） | 同步上游 master → rebase 本分支 → 构建 |
+| **定时** | 每天 UTC 02:00（北京 10:00） | CI 内部临时 rebase 到上游最新 → 构建 |
 | **手动** | Actions 页面点 "Run workflow" | 同"定时" |
+
+> **重要：CI 只构建，不向仓库推送。**
+>
+> 定时/手动触发时，CI 会在**自己的临时工作区**里 rebase 到上游最新再构建，
+> 但**不会**把这个结果推回 GitHub 仓库。原因见
+> [为什么 CI 不推送](#为什么-ci-不推送github_token-的权限限制)。
+>
+> 也就是说：**每次 CI 构建的产物都是上游最新代码 + 你的 Linux 改动**，
+> 但 fork 的 `master` / `feat` 分支本身不会自动更新——需要你手动同步（见下文）。
 
 ---
 
@@ -62,7 +72,8 @@ workflow 文件：`.github/workflows/linux-appimage.yml`
 
 ### 步骤 1：确认基于最新上游
 
-可以等**定时任务**自动同步，也可以**手动触发**一次（Actions 页面 → Linux AppImage → Run workflow）。
+CI 会在构建时自动 rebase 到上游最新，所以**直接打 tag 即可**——产物就是最新的。
+（也可以先手动触发一次，在 Actions 日志里确认构建的提交。）
 
 ### 步骤 2：确认版本号
 
@@ -127,18 +138,38 @@ npm run sync:build:linux
 ./scripts/sync-and-build-linux.sh
 ```
 
-### CI 替你 rebase 后，本地如何跟上
+### 手动同步 fork 分支到上游最新
 
-workflow 的 `sync` job（定时/手动触发时）会自动 rebase `feat/linux-packaging`
-并强制推送。所以本地可能落后，同步方式：
+CI 不会替你推送，所以**想让 fork 的 `master`/`feat` 跟上上游，需要手动做**：
 
 ```bash
-git fetch origin
+cd /var/home/justin/Workspace/github/cuckoo-code
+
+# 1. 拉取上游最新
+git fetch upstream master
+
+# 2. 同步 master
+git checkout master
+git rebase upstream/master
+git push origin master --force-with-lease
+
+# 3. 同步 feat（基于新 master）
 git checkout feat/linux-packaging
-git reset --hard origin/feat/linux-packaging
+git rebase master
+git push origin feat/linux-packaging --force-with-lease
 ```
 
-> ⚠️ `reset --hard` 会丢弃本地未提交/未推送的改动。执行前确认工作区干净。
+> ⚠️ 这两步 `push` 涉及 `.github/workflows/` 下的文件，**必须用带 `workflow` 权限的 PAT**，
+> 不能用网页操作或普通密码。详见 [什么是 PAT](#什么是-pat-以及为什么需要它)。
+
+或者直接用一键脚本（推荐）：
+
+```bash
+./scripts/sync-and-build-linux.sh
+```
+
+> 注：这个脚本会 rebase 本地分支，但**不推送**（推送需要 PAT，脚本未包含）。
+> 推送仍需按上面的命令手动执行。
 
 ---
 
@@ -167,9 +198,14 @@ npm run typecheck
 git diff origin/master..HEAD -- src/app/entry.ts   # 应只剩 Wayland 修复
 ```
 
-### CI 自动 rebase 失败时
+### CI 内部 rebase 失败时
 
-`sync` job 会输出警告并**跳过本次构建**（不会破坏分支）。此时需要你手动解决：
+CI 在定时/手动触发时会尝试 `git rebase upstream/master`。若有冲突，它会：
+- 输出警告 `rebase 到上游最新有冲突，改用当前分支状态构建`
+- `--abort` 回滚
+- **用分支当前状态继续构建**（不会失败）
+
+所以你仍会得到一个 AppImage，但**不是上游最新代码**。要解决冲突：
 
 ```bash
 git fetch upstream master
@@ -177,8 +213,10 @@ git rebase upstream/master
 # 解决冲突后：
 git add <冲突文件>
 git rebase --continue
-git push origin feat/linux-packaging --force-with-lease
+git push origin feat/linux-packaging --force-with-lease   # 需 PAT
 ```
+
+下一次 CI 构建就会用上已解决冲突的版本。
 
 ### 根治建议
 
@@ -215,6 +253,92 @@ git push origin feat/linux-packaging --force-with-lease
 workflow **不会**根据 tag 名修改 `package.json` 的 version（上游的
 `scripts/sync-version.js` 未在 Linux workflow 中调用）。产物文件名来自
 `package.json`，所以打 tag 前请确认两者一致。
+
+---
+
+## 什么是 PAT？以及为什么需要它
+
+### PAT 是什么
+
+**PAT = Personal Access Token（个人访问令牌）**。
+
+它是 GitHub 用来替代"账号密码"的**一串令牌字符串**（形如 `ghp_xxxxxxxx`）。
+当你用命令行 `git push` 到 GitHub 时，GitHub 需要确认"你是谁、有没有权限"——
+PAT 就是这个凭证。
+
+> 背景：GitHub 从 2021 年起**不再允许用账号密码做 git 操作**，必须用 PAT
+> （或 SSH 密钥、GitHub App 令牌）。
+
+### 这个项目里，谁需要 PAT
+
+| 操作 | 用什么凭证 | 需要 PAT 吗 |
+|------|-----------|------------|
+| CI 自动构建 AppImage | GitHub 内置的 `GITHUB_TOKEN` | ❌ 不需要 |
+| CI 打 tag 发 Release | GitHub 内置的 `GITHUB_TOKEN` | ❌ 不需要 |
+| **本地 `git push` 到 fork（含 workflow 文件）** | **你的 PAT** | ✅ **需要** |
+| 本地 push 普通代码（不含 workflow） | PAT 或 GitHub 网页 | 视情况 |
+
+### 为什么推送必须用带 `workflow` 权限的 PAT
+
+GitHub 有一条**硬性安全规则**：
+
+> 如果一个 push 修改了 `.github/workflows/` 下的任何文件，
+> 那么推送者必须拥有 `workflow` 权限。
+
+而 GitHub Actions 里的内置 `GITHUB_TOKEN` **没有这个权限**（且无法通过
+`permissions:` 授予）。这就是之前 CI 自动同步任务失败的原因：
+
+```
+! [remote rejected] master -> master
+(refusing to allow a GitHub App to create or update workflow
+ '.github/workflows/release.yml' without 'workflows' permission)
+```
+
+**所以现在的分工是**：
+- **CI 只负责构建**（无需 PAT，全自动）
+- **推送（会碰到 workflow 文件）由你在本地用 PAT 完成**
+
+### 如何生成 PAT
+
+1. 打开 https://github.com/settings/tokens
+2. 选 **Tokens (classic)** → **Generate new token (classic)**
+3. 勾选权限：
+   - ☑ **`repo`**（读写仓库）
+   - ☑ **`workflow`**（修改 workflow 文件 —— **必须**）
+4. 生成后复制那串 `ghp_...`（**只显示一次，务必保存**）
+
+### 如何使用 PAT 推送
+
+**方式一：URL 内嵌（一次性）**
+
+```bash
+git push https://<用户名>:<PAT>@github.com/<用户名>/cuckoo-code.git <分支>
+```
+
+**方式二：让 git 记住（推荐）**
+
+```bash
+# 首次配置
+git config --global credential.helper store
+
+# 之后第一次 push 会提示输入用户名和密码
+# 用户名填 GitHub 用户名，密码填 PAT（不是账号密码）
+git push origin master
+```
+
+**方式三：用 `gh` CLI（最省心）**
+
+```bash
+gh auth login          # 按提示登录一次
+git push origin master # 之后无需再输凭证
+```
+
+### ⚠️ 安全提醒
+
+- PAT 等同于密码，**不要提交进 git、不要贴到公开场合**
+- 一旦泄露，立刻到 https://github.com/settings/tokens 撤销（Revoke）
+- 建议设置**有效期**（如 90 天），到期重新生成
+- 权限**最小化**：只需 `repo` + `workflow` 两项
 
 ---
 
